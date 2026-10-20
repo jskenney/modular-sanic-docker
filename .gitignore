@@ -1,0 +1,10 @@
+.env
+*.log
+*_log
+*.pem
+*.crt
+*.key
+*.pid
+logs/
+audit/
+data/

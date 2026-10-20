@@ -1,0 +1,111 @@
+services:
+  nginx:
+    image: dhi.io/nginx:1
+    ports:
+      - ${WEB_UNSECURE:-80}:80
+      - ${WEB_SECURE:-443}:443
+    volumes:
+      - ./html:/html
+      - ./config/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./config/ssl/bundle.crt:/etc/nginx/ssl/bundle.crt:ro
+      - ./config/ssl/bundle.key:/etc/nginx/ssl/bundle.key:ro
+      - shared_ramdisk:/ram
+    depends_on:
+      - api
+    #logging:
+    #  driver: syslog
+    #  options:
+    #    syslog-address: "tcp://${SYSLOG_IP}:${SYSLOG_PORT:-514}"
+    #    tag: "docker-${APP_NAME:-sanic}-nginx"
+
+  mariadb:
+    image: mariadb:12-ubi10
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    expose:
+     -  "${DB_PORT:-3306}"
+    environment:
+      - MARIADB_DATABASE=${DB_NAME:-app}
+      - MARIADB_USER=${DB_USER:-app}
+      - MARIADB_PASSWORD=${DB_PASS:-apppassword}
+      - MARIADB_ROOT_PASSWORD=${DB_ROOT_PASSWORD:-rootpass}
+    command:
+      - mariadbd
+      - --sql-mode=STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+      - --binlog-expire-logs-seconds=604800
+      # STIG Auditing Enforcement
+      - --plugin-load-add=server_audit=server_audit.so
+      - --server-audit=FORCE_PLUS_PERMANENT
+      - --server-audit-logging=ON
+      - --server-audit-events=CONNECT,QUERY_DDL,QUERY_DCL
+      - --server-audit-file-path=/var/log/mysql/server_audit.log
+      - --server-audit-file-rotate-size=100000000
+      - --server-audit-file-rotations=10
+    volumes:
+      - ./config/mariadb/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./data/mariadb/db:/var/lib/mysql
+      - ./data/mariadb/audit:/var/log/mysql
+    #logging:
+    #  driver: syslog
+    #  options:
+    #    syslog-address: "tcp://${SYSLOG_IP}:${SYSLOG_PORT:-514}"
+    #    tag: "docker-${APP_NAME:-sanic}-mariadb"
+
+  memcached:
+    image: memcached:latest
+    expose:
+      - "${MEMCACHED_PORT:-11211}"
+    command: ["-m","32768", "-I","512M", "-t","16"]
+    restart: unless-stopped
+    #logging:
+    #  driver: syslog
+    #  options:
+    #    syslog-address: "tcp://${SYSLOG_IP}:${SYSLOG_PORT:-514}"
+    #    tag: "docker-${APP_NAME:-sanic}-memcached"
+
+  api:
+    build:
+      context: ./config/sanic
+      dockerfile: Dockerfile
+    pull_policy: never
+    image: sanic-app:latest
+    user: 1000:1000
+    volumes:
+      - ./api:/app/external
+      - ./html:/app/html
+      - ./.env:/app/.env:ro
+      - shared_ramdisk:/ram  
+      - /etc/passwd:/etc/passwd:ro  # to support PAM authentication
+      - /etc/shadow:/etc/shadow:ro  # to support PAM authentication
+      - /etc/group:/etc/group:ro    # to support PAM authentication
+    expose:
+     -  "${API_PORT:-8000}"
+    restart: unless-stopped
+    environment:
+      TZ: America/New_York
+      PYTHONUNBUFFERED: "1"
+    command: ["python", "-m", "sanic", "server", "--reload", "--debug", "--host=0.0.0.0", "-R", "/app/external"]
+    depends_on:
+      memcached:
+        condition: service_started
+      mariadb:
+        condition: service_healthy
+    #logging:
+    #  driver: syslog
+    #  options:
+    #    syslog-address: "tcp://${SYSLOG_IP}:${SYSLOG_PORT:-514}"
+    #    tag: "docker-${APP_NAME:-sanic}-api"
+
+volumes:
+  shared_ramdisk:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=${RAMDISK:-2g}
+

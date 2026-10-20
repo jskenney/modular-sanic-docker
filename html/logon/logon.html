@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="/favicon.ico">
+  <title>Site Logon</title>
+  <style id="auth-theme">
+:root {
+  color-scheme: light;
+  --page-background: #f5f6f8;
+  --surface: #ffffff;
+  --surface-muted: #f0f3f7;
+  --text: #303744;
+  --text-muted: #636d7c;
+  --border: #dce1e8;
+  --primary: #1c6dca;
+  --primary-hover: #175bae;
+  --focus: rgba(28, 109, 202, 0.18);
+  --danger: #a52f3c;
+  --radius: 8px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--page-background);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; min-width: 240px; }
+body.modal-open { overflow: hidden; }
+button, input { font: inherit; }
+button, input, a { -webkit-tap-highlight-color: transparent; }
+button { cursor: pointer; }
+a { color: var(--primary); text-underline-offset: 3px; }
+a:hover { color: var(--primary-hover); }
+svg { display: block; flex-shrink: 0; }
+:focus-visible { outline: 3px solid var(--primary); outline-offset: 3px; }
+
+.auth-layout {
+  min-height: 100vh;
+  min-height: 100svh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 36px 24px;
+}
+.auth-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  width: 100%;
+  max-width: 920px;
+  min-height: 500px;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 32px rgba(30, 45, 65, 0.06);
+}
+.auth-content {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  padding: 44px 42px;
+}
+.auth-header { margin-bottom: 28px; text-align: center; }
+.auth-symbol {
+  display: grid;
+  place-items: center;
+  width: 60px;
+  height: 60px;
+  margin: 0 auto 18px;
+  color: var(--primary);
+  background: #eef5fd;
+  border-radius: 50%;
+}
+.auth-symbol svg { width: 30px; height: 30px; }
+.auth-title {
+  margin: 0;
+  font-size: 27px;
+  font-weight: 500;
+  line-height: 1.25;
+  letter-spacing: -0.5px;
+}
+.auth-description { margin: 10px 0 0; color: var(--text-muted); font-size: 14px; }
+.auth-brand {
+  position: relative;
+  min-width: 0;
+  min-height: 100%;
+  overflow: hidden;
+  background: var(--surface-muted);
+  border-left: 1px solid var(--border);
+}
+.auth-brand > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.brand-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 24px;
+  color: var(--text-muted);
+  text-align: center;
+}
+.brand-fallback svg { width: 76px; height: 76px; color: #98a7b9; }
+.brand-fallback span { font-size: 14px; letter-spacing: 0.04em; }
+.form-stack { display: grid; gap: 20px; margin: 0; }
+.field { min-width: 0; }
+.field-label { display: block; margin-bottom: 7px; font-size: 13px; font-weight: 600; }
+.input-wrap { position: relative; }
+.field-icon {
+  position: absolute;
+  top: 50%;
+  left: 13px;
+  width: 19px;
+  height: 19px;
+  color: var(--text-muted);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+.form-input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 46px;
+  padding: 10px 12px 10px 41px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  background: var(--surface);
+  font-size: 16px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.form-input::placeholder { color: #7a8492; opacity: 1; }
+.form-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--focus); }
+.form-input:disabled { color: var(--text-muted); background: #f7f8fa; cursor: not-allowed; opacity: 1; }
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 10px 20px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: center;
+  text-decoration: none;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+.button-primary { color: #ffffff; background: var(--primary); }
+.button-primary:hover:not(:disabled) { background: var(--primary-hover); }
+.button-secondary { color: var(--primary); background: var(--surface); border-color: var(--border); }
+.button-secondary:hover { background: #f7faff; border-color: var(--primary); }
+.button-block { width: 100%; }
+.button:disabled { cursor: not-allowed; opacity: 0.65; }
+.notice { margin: 16px 0 0; font-size: 13px; color: var(--text-muted); overflow-wrap: anywhere; }
+.notice.is-error { color: var(--danger); }
+.noscript-note { margin-top: 16px; color: var(--danger); font-size: 13px; }
+.upload-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 220px;
+  padding: 28px 16px;
+  border: 1px dashed #adb9c8;
+  border-radius: 4px;
+  background: #fafbfd;
+  text-align: center;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+.upload-zone > svg { width: 35px; height: 35px; color: var(--text-muted); }
+.upload-zone.is-dragover { border-color: var(--primary); background: #eef5fd; }
+.upload-zone.is-busy { opacity: 0.7; }
+.upload-zone p { margin: 0; }
+.upload-help { color: var(--text-muted); font-size: 13px; }
+.file-picker { position: relative; max-width: 100%; overflow: hidden; cursor: pointer; }
+.file-picker:focus-within { outline: 3px solid var(--primary); outline-offset: 3px; }
+.file-picker input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.file-picker input:disabled { cursor: not-allowed; }
+.file-name { margin: 0; color: var(--text-muted); font-size: 13px; overflow-wrap: anywhere; }
+.upload-progress {
+  display: block;
+  width: 100%;
+  height: 8px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  accent-color: var(--primary);
+}
+.upload-progress::-webkit-progress-bar { background: var(--surface-muted); border-radius: 999px; }
+.upload-progress::-webkit-progress-value { background: var(--primary); border-radius: 999px; }
+.upload-progress::-moz-progress-bar { background: var(--primary); border-radius: 999px; }
+.site-dialog {
+  width: calc(100% - 32px);
+  max-width: 520px;
+  max-height: calc(100vh - 40px);
+  max-height: calc(100dvh - 40px);
+  margin: auto;
+  padding: 0;
+  overflow: auto;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 20px 70px rgba(15, 25, 40, 0.2);
+}
+.site-dialog::backdrop { background: rgba(25, 33, 46, 0.48); }
+.dialog-header { display: flex; align-items: center; gap: 16px; padding: 20px 24px 0; }
+.dialog-title { flex: 1; margin: 0; font-size: 18px; font-weight: 600; }
+.dialog-close {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 7px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+}
+.dialog-close:hover { background: var(--surface-muted); }
+.dialog-close svg { width: 20px; height: 20px; }
+.dialog-body { padding: 18px 24px 24px; font-size: 15px; overflow-wrap: anywhere; }
+.dialog-body > :first-child { margin-top: 0; }
+.dialog-body > :last-child { margin-bottom: 0; }
+.dialog-body img { max-width: 100%; height: auto; }
+.dialog-body pre { max-width: 100%; overflow: auto; }
+.dialog-footer { display: flex; justify-content: flex-end; padding: 16px 24px; background: #fafbfd; border-top: 1px solid var(--border); }
+
+@media (max-width: 700px) {
+  .auth-layout { padding: 24px 16px; }
+  .auth-card { grid-template-columns: minmax(0, 1fr); max-width: 460px; min-height: 0; }
+  .auth-content { padding: 32px 28px; }
+  .auth-brand { grid-row: 1; height: 160px; min-height: 0; border-left: 0; border-bottom: 1px solid var(--border); }
+  .brand-fallback { flex-direction: row; gap: 16px; }
+  .brand-fallback svg { width: 48px; height: 48px; }
+}
+@media (max-width: 360px) {
+  .auth-layout { padding: 16px 12px; }
+  .auth-content { padding: 28px 20px; }
+  .auth-title { font-size: 24px; }
+  .dialog-header, .dialog-body, .dialog-footer { padding-left: 18px; padding-right: 18px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; }
+}
+  </style>
+</head>
+<body>
+  <main class="auth-layout">
+    <section class="auth-card" aria-labelledby="page-heading">
+      <div class="auth-content">
+        <header class="auth-header">
+          <div class="auth-symbol"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg></div>
+          <h1 id="page-heading" class="auth-title">Sign in</h1>
+          <p class="auth-description">Use your username and password.</p>
+        </header>
+        <form id="loginform" class="form-stack" method="post" aria-describedby="form-status">
+          <div class="field">
+            <label class="field-label" for="inputUsername">Username</label>
+            <div class="input-wrap">
+              <svg class="field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg>
+              <input class="form-input" id="inputUsername" name="username" type="text" placeholder="Username" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+            </div>
+          </div>
+          <div class="field">
+            <label class="field-label" for="inputPassword">Password</label>
+            <div class="input-wrap">
+              <svg class="field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><path d="M12 14v3"/></svg>
+              <input class="form-input" id="inputPassword" name="password" type="password" placeholder="Password" autocomplete="current-password" autocapitalize="none" spellcheck="false" required>
+            </div>
+          </div>
+          <button class="button button-primary button-block" id="sbutton" type="submit">Sign in</button>
+        </form>
+        <p id="form-status" class="notice" role="status" aria-live="polite" aria-atomic="true" hidden></p>
+        <noscript><p class="noscript-note">JavaScript is required to use this page.</p></noscript>
+      </div>
+      <aside class="auth-brand" aria-label="Site branding">
+        <div id="brand-fallback" class="brand-fallback" aria-hidden="true" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg>
+          <span>Account access</span>
+        </div>
+        <img src="/logon/logo.webp" alt="" id="logo">
+      </aside>
+    </section>
+  </main>
+
+  <dialog id="sanic-modal" class="site-dialog" aria-labelledby="sanic-modal-title" aria-describedby="sanic-modal-contents">
+    <header class="dialog-header">
+      <h2 id="sanic-modal-title" class="dialog-title">Site message</h2>
+      <button class="dialog-close" type="button" aria-label="Close message" data-dialog-close><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
+    </header>
+    <div id="sanic-modal-contents" class="dialog-body"></div>
+    <footer class="dialog-footer">
+      <button id="ack" class="button button-primary" type="button" data-dialog-close>Acknowledge</button>
+    </footer>
+  </dialog>
+
+  <script>
+'use strict';
+
+// Shared page behavior is embedded so each HTML file can be deployed on its own.
+const AuthUI = (() => {
+  const dialog = document.getElementById('sanic-modal');
+  const contents = document.getElementById('sanic-modal-contents');
+  const acknowledge = document.getElementById('ack');
+  const status = document.getElementById('form-status');
+  const logo = document.getElementById('logo');
+  const fallback = document.getElementById('brand-fallback');
+  let previousFocus = null;
+  let backdropPress = false;
+
+  function focusFirst(...ids) {
+    if (dialog.open) return;
+    for (const id of ids) {
+      const target = document.getElementById(id);
+      if (target && !target.disabled && !target.hidden) {
+        target.focus();
+        return;
+      }
+    }
+  }
+
+  function showModal(message, { html = false, title = 'Site message' } = {}) {
+    if (!dialog.open) previousFocus = document.activeElement;
+    document.getElementById('sanic-modal-title').textContent = title;
+    // Only the existing, trusted server-provided data.message uses HTML.
+    // Local errors, upload errors, usernames and filenames are plain text.
+    if (html) contents.innerHTML = String(message);
+    else contents.textContent = String(message);
+    if (!dialog.open) dialog.showModal();
+    document.body.classList.add('modal-open');
+    acknowledge.focus();
+  }
+
+  function closeModal() {
+    if (dialog.open) dialog.close();
+  }
+
+  function outsideDialog(event) {
+    const rect = dialog.getBoundingClientRect();
+    return event.target === dialog && (
+      event.clientX < rect.left || event.clientX > rect.right ||
+      event.clientY < rect.top || event.clientY > rect.bottom
+    );
+  }
+
+  dialog.querySelectorAll('[data-dialog-close]').forEach(button => {
+    button.addEventListener('click', closeModal);
+  });
+  dialog.addEventListener('pointerdown', event => {
+    backdropPress = outsideDialog(event);
+  });
+  dialog.addEventListener('click', event => {
+    if (backdropPress && outsideDialog(event)) closeModal();
+    backdropPress = false;
+  });
+  // Keep Tab navigation inside the dialog, including at the first/last control.
+  dialog.addEventListener('keydown', event => {
+    if (event.key !== 'Tab' || event.ctrlKey || event.altKey || event.metaKey) return;
+    const focusable = Array.from(dialog.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), ' +
+      'select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )).filter(element => element.getClientRects().length > 0 &&
+      getComputedStyle(element).visibility !== 'hidden' && element.tabIndex >= 0);
+    if (!focusable.length) {
+      event.preventDefault();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement;
+    if (event.shiftKey && (active === first || !focusable.includes(active))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && (active === last || !focusable.includes(active))) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+  // Native dialogs handle Escape and keep the background inert.
+  dialog.addEventListener('close', () => {
+    document.body.classList.remove('modal-open');
+    if (previousFocus && previousFocus.isConnected && !previousFocus.disabled &&
+        previousFocus !== document.body && !dialog.contains(previousFocus)) {
+      previousFocus.focus();
+    } else {
+      focusFirst('inputUsername', 'inputPassword', 'apiFile', 'sbutton');
+    }
+    previousFocus = null;
+  });
+
+  function showStatus(message = '', isError = false) {
+    status.textContent = message;
+    status.classList.toggle('is-error', isError);
+    status.hidden = !message;
+  }
+
+  function updateLogoState() {
+    const missing = logo.complete && logo.naturalWidth === 0;
+    logo.hidden = missing;
+    fallback.hidden = !missing;
+  }
+  logo.addEventListener('load', updateLogoState);
+  logo.addEventListener('error', updateLogoState);
+  if (logo.complete) updateLogoState();
+
+  function applyMetadata(data = {}, showMessage = true) {
+    if (!data || typeof data !== 'object') return;
+    if (typeof data.logo === 'string' && data.logo.trim() &&
+        data.logo !== logo.getAttribute('src')) {
+      logo.hidden = false;
+      fallback.hidden = true;
+      logo.setAttribute('src', data.logo);
+    }
+    if (typeof data.page_title === 'string' && data.page_title.trim()) {
+      document.title = data.page_title;
+    }
+    if (showMessage && typeof data.message === 'string' && data.message.trim()) {
+      showModal(data.message, { html: true });
+    }
+  }
+
+  function redirect(data) {
+    if (data && typeof data.redirect === 'string' && data.redirect.trim()) {
+      window.location.assign(data.redirect);
+      return true;
+    }
+    return false;
+  }
+
+  async function requestJSON(url, options) {
+    // Keep native same-origin cookies and the caller's original request encoding.
+    const response = await fetch(url, options);
+    // Rejected requests (400/401/403/404/413/429) still return the JSON envelope.
+    if (!response.ok && ![400, 401, 403, 404, 413, 429].includes(response.status)) {
+      throw new Error(`HTTP error! Status: ${response.status}`);
+    }
+    return response.json();
+  }
+
+  async function loadAuthInfo() {
+    try {
+      const result = await requestJSON('/auth/info');
+      if (result.success && redirect(result.data)) return;
+      applyMetadata(result.data);
+    } catch (error) {
+      console.error('Error fetching auth info:', error);
+    }
+  }
+
+  return Object.freeze({
+    showModal, closeModal, showStatus, focusFirst,
+    applyMetadata, redirect, requestJSON, loadAuthInfo
+  });
+})();
+  </script>
+  <script>
+(() => {
+  const form = document.getElementById('loginform');
+  const usernameInput = document.getElementById('inputUsername');
+  const passwordInput = document.getElementById('inputPassword');
+  const submitButton = document.getElementById('sbutton');
+  let busy = false;
+
+  function resetForm() {
+    busy = false;
+    form.removeAttribute('aria-busy');
+    submitButton.textContent = 'Sign in';
+    submitButton.disabled = false;
+    usernameInput.disabled = false;
+    passwordInput.disabled = false;
+    passwordInput.value = '';
+    AuthUI.focusFirst('inputPassword');
+  }
+
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (busy) return;
+    const username = usernameInput.value;
+    const credential = passwordInput.value;
+    busy = true;
+    passwordInput.value = '****';
+    form.setAttribute('aria-busy', 'true');
+    submitButton.textContent = 'Verifying…';
+    submitButton.disabled = true;
+    usernameInput.disabled = true;
+    passwordInput.disabled = true;
+    AuthUI.showStatus();
+
+    try {
+      const result = await AuthUI.requestJSON('/auth/pam', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ username: username, password: credential })
+      });
+      if (result.success && AuthUI.redirect(result.data)) return;
+      resetForm();
+      AuthUI.showStatus(result.success
+        ? 'The server did not provide a destination. Please try again.'
+        : 'Sign-in failed. Check your details and try again.', true);
+    } catch (error) {
+      console.error('Sign-in request failed:', error);
+      resetForm();
+      AuthUI.showStatus('Unable to sign in. Please try again.', true);
+    }
+  });
+
+  AuthUI.loadAuthInfo();
+})();
+  </script>
+</body>
+</html>

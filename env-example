@@ -1,0 +1,36 @@
+# Modular Sanic Specific (https://github.com/jskenney/modular-sanic)
+APP_NAME=sanic
+API_PORT=8000
+API_LOCATIONS=api/auth/general,api/auth/pam,external
+# API_LOCATIONS=api/auth/general,api/auth/switchuser,api/auth/pam,api/auth/apikey,api/auth/email,external
+REDIRECT_LOGON_SUCCESSFUL=/index.html         # Redirect after successful logon
+REDIRECT_LOGON_FAILED=/logon/logon.html       # Redirect after unsuccessful logon
+REDIRECT_LOGOFF=/index.html                   # Redirect after logoff
+CHALLENGE_PAGE=/logon/challenge.html          # Page for authentication challenges
+LOGON_LOGO=/logon/logo.webp                   # Large image for logon pages
+DOCUMENTATION=True
+
+# Web Configuration (nginx)
+WEB_UNSECURE=80
+WEB_SECURE=443
+
+# Database Credentials (mariadb)
+DB_HOST=mariadb
+DB_NAME=app
+DB_USER=app
+DB_PASS=apppasswd
+DB_ROOT_PASSWORD=rootpass
+DB_PORT=3306
+
+# Session Management (memcached)
+MEMCACHED_HOST=memcached
+MEMCACHED_PORT=11211
+
+# Shared RAMDISK
+RAMDISK=2g
+
+# Remote Logging (rsyslog)
+SYSLOG_IP=syslog.x.com
+SYSLOG_PORT=514
+
+

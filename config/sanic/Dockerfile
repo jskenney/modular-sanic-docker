@@ -22,6 +22,6 @@ WORKDIR /app
 RUN git clone "https://github.com/jskenney/modular-sanic.git" /app
 
 # Install Python deps from the repo
-RUN python -m pip install --upgrade pip setuptools \
- && pip install -r requirements.txt --no-build-isolation
+RUN python -m pip install --upgrade pip \
+ && pip install -r requirements.txt
 

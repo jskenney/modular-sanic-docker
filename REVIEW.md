@@ -1,219 +1,189 @@
-# modular-sanic-docker: Repository Review
+# modular-sanic-docker: Repository Review (second pass)
 
-Reviewed at `2ac81d7` ("Initial Commit"), 2026-10-20, against modular-sanic `main` at `b200d4e` (after the three review fix batches). No files in this repo were changed. This file is the only addition.
+Reviewed: `main` at `4dc2350` (2026-10-20). This pass covers fix batch 4 (#1), the build-isolation change (#2), and your commit `4dc2350` ("Removed server tokens - already present in dhi.io version of nginx").
 
-**How it was reviewed:**
-- I read every file: `docker-compose.yml`, `config/sanic/Dockerfile`, `config/nginx/default.conf`, `config/mariadb/init.sql`, `setup.sh`, `env-example`, `.gitignore` and `html/`.
-- I compared the copied files with modular-sanic `main`.
-- I ran `setup.sh`, then brought the stack up with Docker 29.9.1 and tested it over HTTPS through nginx, with `curl` and headless Chromium.
+This pass focuses on **performance, bugs, runtime errors, architecture/design, and health**, and on how the stack runs modular-sanic `main` (now on sanic-session v0.9.0).
 
-**What the sandbox could not run.** These substitutions affect what was tested:
+Tags:
+- **[verified]**: reproduced; with `nginx:1` locally, since `dhi.io` is not reachable from the review sandbox.
+- **[measured]**: has numbers.
+- **[reasoned]**: from reading the code.
 
-| Blocked | Effect on this review |
+No files other than this review were changed.
+
+## 1. The stack today
+
+```
+client ──80/443──▶ nginx (dhi.io/nginx:1)
+                     ├─ /            → ./html (security-headers.conf)
+                     ├─ /ram         → shared tmpfs, autoindex (security-headers.conf)
+                     └─ /api /auth /docs → api:8000
+api (python:3.14-slim + git clone of modular-sanic main; sanic --debug --reload, 1 process)
+  ├─ memcached:latest  (-m 32768 -I 512M -t 16)
+  └─ mariadb:12-ubi10  (healthcheck; init.sql; audit plugin)
+```
+
+What batch 4 fixed, re-checked here:
+- **PAM:** works via `group_add: SHADOW_GID`.
+- **Proxy:** `SANIC_PROXIES_COUNT=1` (client IPs and HSTS are correct).
+- **First run:** `${VAR:?}` guards on the passwords.
+- **`setup.sh` permissions.**
+- **nginx-served pages** get the security headers.
+- **README, SANs, health checks, TZ, `set -euo pipefail`.**
+
+## 2. Checks run
+
+| Check | Result |
 |---|---|
-| `dhi.io` (the nginx image) is denied by this sandbox's network policy | nginx was tested with Docker Hub's `nginx:1` running this repo's `default.conf`, through a compose override. Behaviour specific to the hardened image (non-root uid 65532, its config layout, whether pulling needs a login) is **unverified** and marked as such. |
-| `deb.debian.org` is denied, so the Dockerfile's `apt-get` step cannot run | The API image was built from the same `python:3.14-slim` base with modular-sanic `main` copied in instead of `git clone`, the same `requirements.txt` from PyPI, and no `mysqlclient` (which needs the apt build tools and is unused). Dockerfile findings come from reading it, and are marked as reasoned rather than verified. |
+| `nginx -t` with the shipped `default.conf` on `nginx:1` (1.31.7) | OK. |
+| `server_tokens` placement, with an `nginx.conf` that already sets `server_tokens off;` in `http {}` (as you describe the dhi image) | A second **http-level** `server_tokens off;` in `conf.d`: **fails** (`"server_tokens" directive is duplicate`). That explains your removal. The **server-level** `server { server_tokens off; … }`: **passes**, on both that config and stock `nginx:1`. |
+| `nginx:1` without `server_tokens` (the README's fallback image) | `Server: nginx/1.31.7`, and the version shows on error pages [verified]. |
+| Binary wheels for every modular-sanic requirement on CPython 3.14 / manylinux x86_64 | **All 31 resolve as wheels** (`pip download --only-binary=:all:`). `python-pam` and `aiomysql` are pure Python. Nothing needs a compiler now that `mysqlclient` is gone. |
+| modular-sanic behaviour behind this stack | See modular-sanic REVIEW.md. H-1 (the rate limiter fails open when memcached fails) and M-2 (cookieless requests create sessions) matter most here. |
 
-Findings marked **[verified]** were reproduced on the running stack.
-
----
-
-## 1. How the stack fits together
-
-```
-browser ──HTTP :80──► nginx ── 302 ──► HTTPS :443
-browser ──HTTPS :443─► nginx ─┬─ /            → static files from ./html
-                              ├─ /auth /api /docs → http://api:8000  (modular-sanic)
-                              └─ /ram          → shared tmpfs volume (autoindex)
-api (modular-sanic, uid 1000) ─┬─ mariadb:3306   (init.sql on first start)
-                               ├─ memcached:11211 (sessions, rate limits)
-                               └─ host /etc/passwd, /etc/shadow, /etc/group (read-only, for PAM)
-```
-
-- **`setup.sh`** sets file modes across the whole tree, creates `data/mariadb/{db,audit}` (owned by 999) and `config/ssl`, and generates a 10-year self-signed `bundle.crt`/`bundle.key` (owned by 65532, the hardened-nginx user).
-- **The `api` image** clones modular-sanic at build time and installs its requirements. Compose mounts `./api` → `/app/external`, `./html` → `/app/html` and `./.env` → `/app/.env`, then runs `python -m sanic server --reload --debug --host=0.0.0.0 -R /app/external`.
-- **`env-example`** enables only `api/auth/general`, `api/auth/pam` and `external`, so PAM is the only way to log on.
-
-### What works
-Verified, once the H-1 and H-4 fixes below are applied:
-- `init.sql` matches modular-sanic `main`'s `setup/auth_tables.sql` exactly. It creates the three tables in `app`, with case-sensitive user names and the API key index.
-- MariaDB 12.3.3 starts healthy, including the `server_audit` plugin, writing its log to `data/mariadb/audit`. The container's `mysql` user is uid 999, matching `setup.sh`.
-- Python 3.14 has wheels for every dependency. sanic 25.12.1, sanic-ext, aiomysql, aiomcache, python-pam, ujson, orjson, pydantic and cryptography all install.
-- The app connects to memcached and MariaDB, loads its blueprints plus files dropped into `./api`, and reads `.env` through environs.
-- HTTP redirects to HTTPS. The `__Host-session` cookie is kept over nginx's TLS.
-- Logon, Generate new API key and logoff all work in Chromium.
-- The HTML copied into this repo is byte-identical to modular-sanic `main`.
-- `/ram` has no path-traversal hole: `/ram../etc/passwd` returns 404.
-
----
-
-## 2. Findings
+## 3. Findings
 
 ### HIGH
 
-#### H-1. PAM logon cannot work, and it is the only logon method enabled **[verified]**
-`docker-compose.yml:77,83-85`. The API runs as `1000:1000` with no supplementary groups. The mounted host `/etc/shadow` is `640 root:shadow`, so inside the container `cat /etc/shadow` fails. `pam_unix`'s helper (`unix_chkpwd`) only verifies the calling user's own password. A `POST /auth/pam` with a **correct** password returned 401.
+#### H-1. The API container still runs `sanic --debug --reload`: one process, a file watcher, and restarts on any file change **[verified in the first review; unchanged]**
 
-`env-example:4` enables only `general`, `pam` and `external`, so out of the box **nobody can log on**.
+`docker-compose.yml`, `api.command`:
 
-**Fix.** Add the host's shadow group to the API service:
-
-```yaml
-api:
-  group_add:
-    - "${SHADOW_GID:-42}"   # host shadow group (42 on Debian/Ubuntu); check: getent group shadow
+```
+python -m sanic server --reload --debug --host=0.0.0.0 -R /app/external
 ```
 
-Verified: with `group_add: ["42"]`, the same logon returned 200 and a working session. Because this widens H-2, document it, or also enable `api/auth/apikey` and bootstrap an admin (L-7).
+What this means:
+- **One worker:** there is no `--workers`, so all requests share one event loop and one CPU. The aiomysql pool and the memcached clients serve that one process.
+- **Polling reloader:** it watches the bind-mounted `./api`, and any edit, `git pull`, or editor swap file restarts the server. Each restart gives in-flight requests and nginx 502s, and drops the in-memory rate limits.
+- **Debug logging:** verbose, and debug behaviour in Sanic's own error pages for exceptions modular-sanic doesn't catch.
 
-#### H-2. The host's password hashes are mounted into the application container
-`docker-compose.yml:83-85` mounts the host's `/etc/passwd`, `/etc/shadow` and `/etc/group`. Endpoint files in `./api` are arbitrary code by design. With the H-1 fix applied, any endpoint can read the **host's** password hashes, and any code-execution bug in an endpoint exposes every host account.
+This was M-4 in the first review. It is listed as High now, because with the focus on performance and runtime health it is the largest gap between "deployment" and "dev box".
 
-**Fix.** Prefer a non-host password source for container logons:
-- a dedicated PAM service with `pam_succeed_if` limiting logons to one group;
-- a container-local `passwd`/`shadow` holding only application users, mounted from `./config/pam/`;
-- SSSD/LDAP;
-- or API-key and email logons.
-
-If host PAM is kept, make it opt-in (a compose profile or override file) and document the risk next to it.
-
-#### H-3. nginx isn't trusted as a proxy, so all clients share one rate limit, HSTS is off, and the logs mislead **[verified]**
-`config/nginx/default.conf:30-55` sends `X-Forwarded-For`/`X-Forwarded-Proto`, but the API isn't told to trust them. Every request therefore appears to come from nginx (`ip=172.18.0.5` in the logs) over plain HTTP.
-
-- **Lockout:** 10 bad logons from one client made the **real user's correct logon return 429**. One person can lock everyone out indefinitely.
-- **HSTS never sent:** with `HSTS=86400`, no `Strict-Transport-Security` header appeared.
-- **Misleading warnings:** the app logs "Forwarded headers received but no proxy is configured", and, for a real hostname, "Plain HTTP request … logons will not stick", even though the browser used HTTPS.
-
-**The `.env` route does not work. This is a modular-sanic bug.** Adding `SANIC_PROXIES_COUNT=1` to `.env`, as modular-sanic's README and `env-example` suggest, has **no effect**. environs 15 loads `.env` into its own `Env` object, not `os.environ`, and Sanic reads `SANIC_*` settings only from the real environment. (The settings modular-sanic reads itself, such as `HSTS`, do work from `.env`.) This needs fixing in modular-sanic too; see section 4.
-
-**Fix for this repo.** Set it in compose, where nginx is always the single proxy:
+**Fix:** make production the default and development the opt-in:
 
 ```yaml
-api:
-  environment:
-    SANIC_PROXIES_COUNT: "1"
+command: ["python", "-m", "sanic", "server", "--host=0.0.0.0", "--port=8000",
+          "--workers=${WORKERS:-2}", "--no-access-logs"]
 ```
 
-Verified: with this setting, an attacker container (172.18.0.6) got 429 on its 11th attempt while the real user from another address logged on (200). HSTS was sent, and neither warning appeared. Client-supplied `X-Forwarded-For` values were correctly ignored, because nginx appends the real address and the last hop is used.
-
-#### H-4. A first run without `.env` breaks in ways that are hard to undo **[verified]**
-- `setup.sh` doesn't create `.env`, and compose bind-mounts `./.env:/app/.env:ro` (`docker-compose.yml:81`). On `docker compose up`, Docker created **`.env` and `api/` as root-owned directories** on the host.
-- The API then ran on its built-in defaults: memcached and MySQL on 127.0.0.1, both unreachable. It fell back to in-memory sessions, and the containers still showed as "running".
-- The natural next step, `cp env-example .env`, silently copied the file **into** the `.env` directory.
-- MariaDB had meanwhile initialised `data/mariadb/db` with the compose defaults (`DB_PASS` `apppassword`, `docker-compose.yml:35`). `env-example:21` uses a different password, `apppasswd`. After `.env` was fixed, the app got **`Access denied for user 'app'`**. MariaDB applies credentials only on first initialisation, so the only remedy was deleting the database directory.
-
-**Fix.**
-- In `setup.sh`, copy `env-example` to `.env` if it's missing (and `mkdir -p api`), and refuse to continue if `.env` is a directory.
-- Make the compose defaults match `env-example`, or drop them and use `${DB_PASS:?set DB_PASS in .env}`, so compose fails fast without `.env`.
-- Consider `env_file: .env` on the API service instead of a file bind mount.
-
-#### H-5. Re-running `setup.sh` on a live deployment makes the database world-readable **[verified]**
-`setup.sh:3-5` runs `sudo find . -type f -exec chmod 644` (and `chmod 755` for directories) across the whole tree, including `data/`. After a re-run, MariaDB's files went from **660 to 644** and their directories became 755. That includes `mysql/global_priv.MAD`, which holds the account password hashes, the application tables and `server_audit.log`. In a normal install path, any local user can then read them. `.env`, which holds the database passwords, is also left at 644.
-
-**Fix.** Limit the chmod passes to the repo's own files (for example `git ls-files -z | xargs -0 chmod 644`) and never touch `data/`. Set `chmod 600 .env`. Leave MariaDB's datadir modes to MariaDB.
+Then provide a `docker-compose.dev.yml` override that adds `--debug --reload -R /app/external`. With more than one worker, memcached must be up at API start (see M-3), or sessions split between workers.
 
 ### MEDIUM
 
-#### M-1. Pages served by nginx get none of the app's security headers **[verified]**
-nginx serves all HTML itself (`default.conf:23-27`). `/logon/logon.html` came back with only `Server: nginx/1.31.7`: no `Content-Security-Policy`, no `X-Frame-Options`, no `X-Content-Type-Options` and no HSTS. So the logon and su pages can be framed (clickjacking), and modular-sanic's inline-script hashes are never used. Proxied `/auth/*` responses do carry all of them.
+#### M-1. The image ships a C toolchain and MySQL headers it no longer needs **[verified]**
 
-**Fix.** Either proxy `/` to Sanic (which already serves `/app/html` and adds the headers), or add the same headers in nginx with `add_header … always`, including a CSP that matches the pages' scripts.
+`config/sanic/Dockerfile` installs:
+- `build-essential`, `gcc`, `pkg-config`, `default-libmysqlclient-dev`;
+- `netcat-openbsd`, `unzip`, `zip`, `inotify-tools`.
 
-#### M-2. `/ram` publishes a world-writable shared directory to the internet without a logon **[verified]**
-`default.conf:58-61` (`alias /ram; autoindex on;`). The directory listing and every file in it are served to anyone, with no logon. Files the API writes there were created `rw-rw-rw-`.
+After `96b1771` (modular-sanic drops `mysqlclient`), every requirement installs from a wheel (checked above). The compiler, the MySQL client headers and the zip tools are dead weight. They make the image larger, the build slower, and the image's attack and CVE surface bigger, and none of them run.
 
-**Fix.** If the files are per-user or sensitive, guard them with `auth_request` to a small Sanic endpoint, or mark the location `internal` and serve files through `X-Accel-Redirect` from an authorised endpoint. Turn off `autoindex`. Set a `umask`, or mount options (`uid=1000,mode=0750`), on the tmpfs.
+**Fix:** keep only `git` and `ca-certificates`. `git` is needed for `git clone` and the `sanic_session @ git+…` requirement; switching that to `…/archive/refs/tags/v0.9.0.tar.gz` would make git unnecessary at install time. Then drop the rest:
 
-#### M-3. nginx only forwards `/api`, `/auth` and `/docs`, so most endpoint files are unreachable **[verified]**
-modular-sanic lets a blueprint use any `url_prefix`. A file in `./api` with prefix `/reports` loaded fine, and answered 200 inside the container, but was a **404 through nginx**. Only `/api/*` worked. Docker also creates `./api` as a root-owned directory (H-4), so adding endpoint files needs `sudo`.
+```dockerfile
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+```
 
-**Fix.** Document "endpoint prefixes must start with `/api`", or proxy every path that isn't a static file, for example `try_files $uri $uri/ @api;` with `location @api { proxy_pass http://api:8000; … }`. Create `./api` in `setup.sh`.
+`libpam0g`, which `python-pam` loads, is already in the slim base.
 
-#### M-4. The API container runs in debug and auto-reload mode **[verified]**
-`docker-compose.yml:92` uses `--reload --debug`; the logs show `mode: debug, single worker`. Debug responses are verbose, one worker handles every request, and the reloader watches the mounted code. For "easy deployment" this should not be the default.
+Add `inotify-tools` back only in a development image, if the reloader should use inotify.
 
-**Fix.** Default to `--workers=${WORKERS:-2}` with no debug, and put `--debug --reload` in a `compose.override.yml` or a `dev` profile used for testing.
+#### M-2. Server tokens are back on with the README's `nginx:1` fallback, and the fix that works on both images is server-level **[verified]**
 
-#### M-5. The Dockerfile builds whatever modular-sanic `HEAD` was at first build, then keeps reusing it (reasoned)
-`config/sanic/Dockerfile:22`: `RUN git clone https://github.com/jskenney/modular-sanic.git /app`.
-- **Not reproducible:** no tag or commit is pinned, so two machines building on different days get different code.
-- **Stale:** Docker caches that layer because the command text never changes. A normal `docker compose build` keeps the first clone forever, so later modular-sanic fixes, migrations and README changes never arrive without `--no-cache`.
-- **Large:** the runtime image keeps `build-essential`, `gcc`, `git` and the MySQL headers, which exist only to compile the unused `mysqlclient`. The test image without them was 291 MB.
+`4dc2350` removed `server_tokens off;` because the dhi image already sets it in `http {}`, where a second copy is a duplicate error. On the documented `nginx:1` fallback (README), nginx now advertises `nginx/1.31.7` in `Server:` and on every error page.
 
-**Fix.** Add `ARG MODULAR_SANIC_REF=<tag or sha>` and fetch that ref (for example `ADD https://github.com/jskenney/modular-sanic.git#${MODULAR_SANIC_REF} /app`). Use a multi-stage build, or drop `mysqlclient` from modular-sanic's requirements (its review item M-7). Pin `python:3.14-slim` to a digest for repeatable builds.
+**Fix:** put it back **inside both `server {}` blocks** in `config/nginx/default.conf`. That is a different context, valid next to the dhi image's http-level setting (verified with `nginx -t`), and it covers the fallback image too.
 
-#### M-6. Copied files will drift, and there is no upgrade path for the database
-`html/logon/*.html` and `config/mariadb/init.sql` are copies of modular-sanic files. They are identical to `main` today, but every modular-sanic change to those pages or the schema must be copied by hand. Batch 2 already changed which HTTP methods the pages use, for example. `init.sql` runs only when the data directory is empty, so an existing deployment that picks up a newer modular-sanic never gets `migrate_apikey_hash.sql` or `migrate_user_collation.sql`.
+#### M-3. memcached is a single point of failure with no health check, a 32 GB cap, and modular-sanic stores a session for every cookieless request **[verified for the memcached behaviour]**
 
-**Fix.** Serve the logon pages from the image (`/app/html/logon`) and keep only site-specific pages here. Generate `init.sql` from the pinned modular-sanic ref. Document, or script, running modular-sanic's `setup/migrate_*.sql` on upgrade.
+What I verified, together with modular-sanic:
+- **When memcached stops,** every logon gets a 503 and the rate limiter fails open: unlimited guesses, and a 503 for the right one (modular-sanic H-1).
+- **When memcached restarts** (`restart: unless-stopped`), all sessions and rate-limit counters are wiped.
+- **Every cookieless `/auth/info` request** stores a 7-day session (modular-sanic M-2). That includes probes, crawlers and uptime monitors.
 
-#### M-7. The nginx image comes from `dhi.io` (unverified here)
-`docker-compose.yml:3`. Docker Hardened Images are served from `dhi.io`, which normally needs `docker login dhi.io` with a Docker account. A user who hasn't logged in gets a pull failure on the very first `docker compose up`. I could not confirm whether its non-root nginx (uid 65532) loads `/etc/nginx/conf.d/default.conf` and binds 80/443 the way the stock image does, because the host is blocked here.
+What I reasoned from the compose file:
+- **No health check:** `api` depends on `memcached` with `service_started` only. If the API's import-time probe runs before memcached listens, modular-sanic silently uses per-worker in-memory sessions (modular-sanic M-6). That is harmless with one debug worker, and broken with several (H-1).
+- **Memory:** `-m 32768 -I 512M` (first review, M-10) lets those sessions grow to 32 GB before any eviction, and allows 512 MB items, where sessions are a few hundred bytes.
 
-**Fix.** Document the login step, or default to `nginx:1` (or `nginxinc/nginx-unprivileged`) with the hardened image as an option. Test the hardened image's config path and ports.
+**Fix:**
+- `-m ${MEMCACHED_MB:-256} -I 1m`, which is ample for sessions.
+- A health check for memcached, for example `["CMD-SHELL", "echo stats | nc -q1 127.0.0.1 11211 | grep -q uptime"]` (needs `nc`; the stock image has none, so a tiny `python -c` check from the api side is the alternative), with `depends_on: condition: service_healthy`.
+- Pin `memcached:1.6`.
+- Follow modular-sanic H-1 and M-2.
 
-#### M-8. API documentation is public, and weak default secrets ship in the example **[verified]**
-`env-example:11` sets `DOCUMENTATION=True`, and nginx forwards `/docs` (`default.conf:40-46`). `/docs`, `/docs/swagger` and `/docs/openapi.json` return 200 to anyone. `env-example:21-22` and `docker-compose.yml:35-36` ship `apppasswd`, `apppassword` and `rootpass`.
+#### M-4. Reproducibility: the Dockerfile clones whatever `main` is, and the layer is cached forever (first review M-5, open)
 
-**Fix.** Default `DOCUMENTATION=False`, or restrict `/docs` (for example `allow`/`deny`, or `auth_request`). Have `setup.sh` generate random `DB_PASS` and `DB_ROOT_PASSWORD` into `.env`.
+- `RUN git clone https://github.com/jskenney/modular-sanic.git /app` takes `main` at first build, and Docker's layer cache then keeps that commit until `--no-cache`.
+- The requirements are unpinned (modular-sanic M-7), so two builds a day apart can differ, or a stale build can silently miss fixes, such as the v0.9.0 move.
+- `memcached:latest` is unpinned too.
 
-#### M-9. No README
-The repo has no instructions covering:
-- the steps (`./setup.sh`, `cp env-example .env`, edit `.env`, `docker compose up -d`);
-- the `dhi.io` login (M-7);
-- the PAM requirements (H-1, H-2);
-- where endpoint files go and which prefixes reach them (M-3);
-- how to create the first admin (L-7);
-- upgrades and migrations (M-6).
+**Fix:**
+- `ARG MODULAR_SANIC_REF=<tag or sha>` and `git clone --depth 1 --branch "$MODULAR_SANIC_REF"`; or `COPY` a git submodule.
+- Install from a lock file once modular-sanic ships one.
+- Pin `memcached:1.6`.
 
-**Fix.** Add a README covering these, and link to modular-sanic's README for the endpoint-authoring guide.
+#### M-5. nginx proxying: no upstream keepalive, only three paths forwarded, and `/ram` is public (first review M-2 and M-3, open)
 
-#### M-10. memcached is allowed more memory than the host has, and images are unpinned **[verified]**
-`docker-compose.yml:63` uses `-m 32768 -I 512M -t 16`. `stats settings` showed `maxbytes 34359738368` (32 GB) on a 15 GB host, with 512 MB items allowed. Sessions are tiny, but nothing stops memcached growing until the host swaps or the OOM killer acts. `memcached:latest` and `mariadb:12-ubi10` (a short-support rolling release) aren't pinned.
+**Performance [reasoned]:** `proxy_pass http://api:8000/...` without an `upstream { keepalive 16; }`, `proxy_http_version 1.1` and `proxy_set_header Connection ""` opens a new TCP connection to Sanic for every proxied request. That is small on one host, but it is free to fix.
 
-**Fix.** Use something like `-m 256` (or `${MEMCACHED_MB:-256}`), drop `-I 512M` unless large objects are deliberately cached, and pin the image versions. Consider MariaDB 11.8 LTS.
+There is also no `gzip` for HTML, CSS and JS: the logon pages are 18–22 KB each [measured], mostly the duplicated `AuthUI` script (modular-sanic L-6).
+
+**Design (open from the first review):**
+- Only `/api`, `/auth` and `/docs` are forwarded, so extension routes elsewhere are unreachable (M-3).
+- `/ram` is an unauthenticated, world-writable tmpfs with `autoindex on` (M-2).
+
+**Fix:**
+- One `upstream api { server api:8000; keepalive 16; }`, used by a shared `proxy.conf` include.
+- `gzip on; gzip_types text/css application/javascript application/json;`.
+- Decide what `/ram` is for, and protect it (`auth_request /auth/key`) or remove it.
 
 ### LOW
 
-| ID | Location | Issue | Fix |
+| ID | Where | Issue | Fix |
 |---|---|---|---|
-| L-1 | `setup.sh:10-15` | The self-signed certificate has only `CN=localhost` and no `subjectAltName` **[verified]**. Browsers reject CN-only certificates for any name, and Sanic's own TLS loader refuses them. | Add `-addext "subjectAltName=DNS:localhost,IP:127.0.0.1"`, and allow `SSL_NAMES` from `.env`. |
-| L-2 | `default.conf:6` | `return 302 https://$host$request_uri` drops the port, so `WEB_SECURE` values other than 443 redirect to the wrong port. A temporary 302 is used for a permanent redirect. | Use `return 301 https://$host:${WEB_SECURE}$request_uri` via an envsubst template, or document that 443 is required. |
-| L-3 | `default.conf`, `docker-compose.yml:2-20` | nginx shows its version in headers and error pages (`nginx/1.31.7`) **[verified]**. nginx has no `restart:` policy, so it doesn't come back after a reboot. `api` and `nginx` have no health checks; nginx starts before the API is ready (502s). | `server_tokens off;`, `restart: unless-stopped`, an API health check (`GET /auth/info`) with `depends_on: condition: service_healthy`. |
-| L-4 | `env-example:3,23`, `docker-compose.yml:31,87`, `default.conf:31` | `API_PORT` and `DB_PORT` appear configurable but aren't wired through. Sanic always listens on 8000 and nginx hard-codes `api:8000`. MariaDB always listens on 3306 while the app connects to `DB_PORT`. | Pass `--port=${API_PORT}` and template nginx, or remove the variables. |
-| L-5 | `html/index.html`, `env-example:6` | After logon, users are sent to `/index.html`, a "down for maintenance" page **[verified]**. | Ship a real landing page, or point `REDIRECT_LOGON_SUCCESSFUL` at `/logon/index.html`. |
-| L-6 | `env-example:4`; `html/logon/index.html` | The bundled pages link to the API key, key file, email challenge, su and return pages, but those endpoints aren't enabled by the default `API_LOCATIONS`, so those pages fail. | Enable them, or note in `env-example` which pages need which locations. |
-| L-7 | `config/mariadb/init.sql` | There is no way to create the first administrator. | Optionally insert `ADMIN_USER` from `.env` with `admin/permissions` and `admin/become` in an init script. |
-| L-8 | `setup.sh` | No `set -e`. Uses `sudo` for every step, including `chmod` of `.git`. Must be run from the repo root. The `chown 65532` only suits the hardened nginx image. | `set -euo pipefail`, `cd "$(dirname "$0")"`, limit `sudo` to the `chown`s. |
-| L-9 | `docker-compose.yml:90` | `TZ` is set only on the API container (MariaDB runs in UTC). Not a correctness issue today, because all expiry comparisons happen inside the database, but logs disagree. | Set the same `TZ` on every service, or none. |
+| L-1 | `docker-compose.yml`, api healthcheck | The health check (`/auth/redirect_if_logged_on` every 10 s) proves Sanic answers, but not that MariaDB or memcached work for it. After a database outage the API stays "healthy" while every logon fails (modular-sanic M-1). It creates no sessions, which is good. | Optionally add a `/health` route in modular-sanic that pings the pool and memcached; keep the check cheap. |
+| L-2 | `default.conf:6` | `return 302` to `https://$host$request_uri` still drops a non-443 `WEB_SECURE` port, and is temporary (first review L-2). | `301`, with the port templated or documented. |
+| L-3 | `env-example`, compose | `API_PORT` and `DB_PORT` still look configurable but aren't wired through (first review L-4). | Remove them, or wire them through. |
+| L-4 | `html/`, `init.sql` | The landing page is still "down for maintenance", the bundled pages link to endpoints that aren't enabled, and there is no way to create the first administrator (first review L-5 to L-7). | As in the first review. |
+| L-5 | `docker-compose.yml`, mariadb | `restart: unless-stopped`, but there is no backup or upgrade story for `./data/mariadb` (first review M-6). The audit log rotates at 10 × 100 MB, which is fine. | A `README` section on `mariadb-dump` and schema migrations (modular-sanic ships `migrate_*.sql`). |
 
----
+## 4. Status of findings from the first review
 
-## 3. Prioritized top 10
+| Item | Status | Notes |
+|---|---|---|
+| H-1 PAM | **Fixed** (#1) | |
+| H-2 host shadow mounted | **Open, by design** | Documented in compose and the README. |
+| H-3 proxy trust | **Fixed** (#1) | |
+| H-4 first run without `.env` | **Fixed** (#1) | |
+| H-5 `setup.sh` permissions | **Fixed** (#1) | |
+| M-1 nginx security headers | **Fixed** (#1) | |
+| M-2 `/ram` public | **Open** | M-5. |
+| M-3 only three paths proxied | **Open** | M-5. |
+| M-4 debug and reload | **Open** | Now H-1. |
+| M-5 unpinned clone | **Open** | Now M-4. |
+| M-6 drift and DB upgrades | **Open** | L-5. |
+| M-7 `dhi.io` image | **Open** | The README documents the `nginx:1` fallback; see M-2 for `server_tokens`. |
+| M-8 public docs, weak example secrets | **Partly fixed** | Passwords are now required; `DOCUMENTATION` stays off by default in modular-sanic. |
+| M-9 README | **Fixed** (#1) | |
+| M-10 memcached memory, unpinned images | **Open** | M-3 and M-4. |
+| L-1 SAN | **Fixed** (#1) | |
+| L-3 `server_tokens`, restart, health checks | **Partly regressed** | Restart and health checks are fixed; `server_tokens` was removed in `4dc2350` (M-2). |
+| L-8 `setup.sh` | **Fixed** (#1) | |
+| L-9 TZ | **Fixed** (#1) | |
+| L-2, L-4 to L-7 | **Open** | L-2, L-3, L-4. |
+| #2 build isolation | **Fixed** | `pip install -r requirements.txt` builds normally. |
 
-1. **H-1, then H-2.** Make logon possible: add the shadow group so PAM works, and decide how much host-password exposure is acceptable. A dedicated PAM service or container-local accounts, or enabling API-key logon, are safer.
-2. **H-3.** Set `SANIC_PROXIES_COUNT=1` in the API service's compose `environment:`. Without it, one person can lock every user out and HSTS is never sent.
-3. **H-4.** Make the first run foolproof: `setup.sh` creates `.env` and `./api`, and the compose defaults match `env-example`, or compose fails without them.
-4. **H-5.** Stop `setup.sh` from chmod-ing `data/`, and lock down `.env`.
-5. **M-1.** Get the security headers onto the nginx-served pages, or let Sanic serve them.
-6. **M-2.** Put `/ram` behind authentication (or make it `internal`) and turn off `autoindex`.
-7. **M-3.** Forward every non-static path to Sanic, or document the `/api` prefix rule; create `./api` in `setup.sh`.
-8. **M-4 and M-5.** Production-style default command (workers, no debug), and a pinned, cache-correct modular-sanic ref in the Dockerfile.
-9. **M-9 and M-7.** Write a README, including the `dhi.io` login or a fallback nginx image.
-10. **M-6, M-8 and M-10.** Plan for drift and migrations, close `/docs` and use generated secrets, and right-size and pin memcached and MariaDB.
+## 5. Prioritized top 10
 
----
-
-## 4. Finding for modular-sanic itself
-
-**`SANIC_*` settings in `.env` are ignored [verified].** environs 15 loads `.env` into the `Env` object only. Sanic builds its config from `os.environ` when `Sanic(...)` is created, so `SANIC_PROXIES_COUNT` / `SANIC_REAL_IP_HEADER` / `SANIC_FORWARDED_SECRET` set in `.env` never take effect. modular-sanic's README ("in the environment or `.env`") and `env-example` currently say they do. That instruction came from its batch 3 PR, and only the real environment variable was tested then.
-
-**Fix in modular-sanic `server.py`.** Copy the `SANIC_` keys into the process environment before `Sanic(...)` is created, for example:
-
-```python
-for key, value in dotenv_values().items():
-    if key.startswith('SANIC_') and value is not None:
-        os.environ.setdefault(key, value)
-```
-
-Or apply them to `app.config` after creation. Then correct the README.
+1. **H-1:** run production mode (several workers, no debug or reload) by default, with a dev override file.
+2. **M-3, together with modular-sanic H-1:** memcached health check and `service_healthy`, a sane `-m`/`-I`, and a pinned tag. Fix the fail-open limiter in modular-sanic.
+3. **M-2:** `server_tokens off;` inside each `server {}`, which works on dhi and `nginx:1`.
+4. **M-1:** drop the build toolchain and MySQL headers from the image.
+5. **M-4:** pin the modular-sanic ref in the Dockerfile, and pin memcached.
+6. **M-5:** decide on `/ram` (protect or remove it).
+7. **M-5:** forward extension paths, or document `API_LOCATIONS` prefixes.
+8. **M-5:** upstream keepalive and gzip.
+9. **L-1:** a health check that covers the DB and memcached.
+10. **L-2 to L-5:** redirect port, unused port variables, landing page and first admin, backup notes.
